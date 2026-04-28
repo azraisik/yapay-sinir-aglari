@@ -1,4 +1,4 @@
-# Yapay Sinir Ağları ile SLA İhlali Tahmini
+# SLA İhlali Tahmini
 
 ## Veri Seti Bilgisi
 
