@@ -1,0 +1,40 @@
+{
+  "model_file": "rf_duration_regression_model.pkl",
+  "training_file": "SLA_Sure_Tahmin_Veri.csv",
+  "case_file": "SLA_Sure_Tahmin_Arayuz_Dosyalari.csv",
+  "categorical_features": [
+    "Variant",
+    "Priority",
+    "Issue Type",
+    "Report Channel"
+  ],
+  "numeric_features": [
+    "Step_count",
+    "Reassignment_count",
+    "Escalation_count",
+    "Has_Bounce",
+    "Workload_Index",
+    "Open_Hour",
+    "Is_Weekend"
+  ],
+  "model_features": [
+    "Variant",
+    "Priority",
+    "Issue Type",
+    "Report Channel",
+    "Step_count",
+    "Reassignment_count",
+    "Escalation_count",
+    "Has_Bounce",
+    "Workload_Index",
+    "Open_Hour",
+    "Is_Weekend"
+  ],
+  "target": "Resolution_Time_Hours",
+  "prediction_column": "Predicted_Duration_Hours",
+  "metrics": {
+    "MAE": 1.5582086401631985,
+    "RMSE": 2.097459319480238,
+    "R2": 0.9258219331069402
+  }
+}

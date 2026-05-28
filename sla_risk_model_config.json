@@ -1,0 +1,41 @@
+{
+  "model_file": "rf_sla_risk_model.pkl",
+  "case_file": "SLA_Arayuz_Dosyalari.csv",
+  "categorical_features": [
+    "Priority",
+    "Issue Type",
+    "Report Channel",
+    "Variant"
+  ],
+  "numeric_features": [
+    "Step_count",
+    "Reassignment_count",
+    "Escalation_count",
+    "Has_Bounce",
+    "Workload_Index",
+    "Open_Hour",
+    "Is_Weekend"
+  ],
+  "model_features": [
+    "Priority",
+    "Issue Type",
+    "Report Channel",
+    "Variant",
+    "Step_count",
+    "Reassignment_count",
+    "Escalation_count",
+    "Has_Bounce",
+    "Workload_Index",
+    "Open_Hour",
+    "Is_Weekend"
+  ],
+  "risk_thresholds": {
+    "low": 0.4,
+    "high": 0.7
+  },
+  "sla_limits_hours": {
+    "High": 8,
+    "Medium": 24,
+    "Low": 48
+  }
+}
