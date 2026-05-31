@@ -14,6 +14,29 @@ BASE_DIR = Path(__file__).resolve().parent
 
 RISK_CONFIG_FILE = "sla_risk_model_config.json"
 DURATION_CONFIG_FILE = "duration_model_config.json"
+YSA_CONFIG_FILE = "ysa_model_config.json"
+YSA_MODEL_FILE = "ysa_sla_risk_model.keras"
+YSA_NUMPY_MODEL_FILE = "ysa_sla_risk_weights.npz"
+YSA_PREPROCESSOR_FILE = "ysa_preprocessor.pkl"
+YSA_SCALER_FILE = "ysa_scaler.pkl"
+YSA_ENCODER_FILE = "ysa_encoder.pkl"
+YSA_FEATURE_LIST_FILE = "ysa_feature_list.json"
+
+YSA_MODEL_CANDIDATES = [
+    YSA_NUMPY_MODEL_FILE,
+    YSA_MODEL_FILE,
+    "ysa_sla_risk_model.h5",
+    "ysa_sla_risk_pipeline.pkl",
+    "ysa_sla_risk_model.pkl",
+    "ann_sla_risk_model.keras",
+    "ann_sla_risk_model.h5",
+]
+YSA_NEURAL_MODEL_SUFFIXES = {".keras", ".h5", ".npz"}
+
+YSA_PREPROCESSING_MISSING_MESSAGE = (
+    "YSA tahmini için gerekli ön işleme dosyaları bulunamadı. "
+    "Lütfen eğitimde kullanılan scaler/encoder/feature list dosyalarını ekleyin."
+)
 
 DEFAULT_RISK_THRESHOLDS = {"low": 0.40, "high": 0.70}
 DEFAULT_SLA_LIMITS = {"High": 8, "Medium": 24, "Low": 48}
@@ -292,6 +315,82 @@ def load_model(file_name: str) -> Any:
     return joblib.load(path)
 
 
+def existing_file_name(file_names: list[str]) -> str | None:
+    for file_name in file_names:
+        if file_name and (BASE_DIR / file_name).exists():
+            return file_name
+    return None
+
+
+@st.cache_resource(show_spinner=False)
+def load_ysa_model(file_name: str) -> Any:
+    path = BASE_DIR / file_name
+    if not path.exists():
+        raise FileNotFoundError(f"{file_name} bulunamadı.")
+    suffix = path.suffix.lower()
+    if suffix == ".npz":
+        layers = []
+        with np.load(path) as data:
+            layer_index = 0
+            while f"W{layer_index}" in data and f"b{layer_index}" in data:
+                layers.append((
+                    np.asarray(data[f"W{layer_index}"], dtype=np.float32),
+                    np.asarray(data[f"b{layer_index}"], dtype=np.float32),
+                ))
+                layer_index += 1
+        if not layers:
+            raise ValueError("YSA NumPy ağırlık dosyasında katman bilgisi bulunamadı.")
+        return {"model_type": "numpy_dense_sigmoid", "layers": layers}
+    if suffix in {".keras", ".h5"}:
+        try:
+            from tensorflow.keras.models import load_model as keras_load_model
+        except Exception as exc:
+            raise RuntimeError(
+                "YSA modeli Keras formatında, ancak TensorFlow/Keras yüklenemedi."
+            ) from exc
+        return keras_load_model(path)
+    return joblib.load(path)
+
+
+@st.cache_resource(show_spinner=False)
+def load_ysa_joblib(file_name: str) -> Any:
+    path = BASE_DIR / file_name
+    if not path.exists():
+        raise FileNotFoundError(f"{file_name} bulunamadı.")
+    return joblib.load(path)
+
+
+@st.cache_data(show_spinner=False)
+def load_ysa_feature_list_file(file_name: str) -> list[str]:
+    path = BASE_DIR / file_name
+    if not path.exists():
+        return []
+    suffix = path.suffix.lower()
+    if suffix == ".json":
+        with path.open("r", encoding="utf-8") as file:
+            value = json.load(file)
+        if isinstance(value, list):
+            return [str(item) for item in value]
+        if isinstance(value, dict):
+            for key in (
+                "model_features",
+                "input_features",
+                "processed_features",
+                "encoded_features",
+                "one_hot_columns",
+                "feature_names",
+                "feature_names_out",
+            ):
+                items = value.get(key)
+                if isinstance(items, list):
+                    return [str(item) for item in items]
+        return []
+    if suffix in {".csv", ".txt"}:
+        text = path.read_text(encoding="utf-8")
+        return [item.strip() for item in text.replace("\n", ",").split(",") if item.strip()]
+    return []
+
+
 def normalize_name(value: str) -> str:
     return (
         value.strip()
@@ -375,6 +474,398 @@ def feature_by_name(features: list[str], target: str) -> str | None:
         if normalize_name(feature) == target_name:
             return feature
     return None
+
+
+def config_list(config: dict[str, Any], keys: list[str]) -> list[str]:
+    for key in keys:
+        items = get_list(config, key)
+        if items:
+            return [str(item) for item in items]
+    return []
+
+
+def load_ysa_config(risk_config: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    config_path = BASE_DIR / YSA_CONFIG_FILE
+    if config_path.exists():
+        config = read_json(config_path)
+        source = YSA_CONFIG_FILE
+    else:
+        config = dict(risk_config)
+        config.pop("model_file", None)
+        source = RISK_CONFIG_FILE
+
+    model_features = get_list(config, "model_features") or get_list(risk_config, "model_features")
+    categorical_features = get_list(config, "categorical_features") or get_list(
+        risk_config, "categorical_features"
+    )
+    numeric_features = get_list(config, "numeric_features") or get_list(risk_config, "numeric_features")
+
+    config["model_features"] = model_features
+    config["categorical_features"] = categorical_features
+    config["numeric_features"] = numeric_features
+    config.setdefault("case_file", risk_config.get("case_file"))
+    return config, source
+
+
+def ysa_model_file_name(config: dict[str, Any]) -> str | None:
+    configured = str(config.get("model_file", "")).strip()
+    numpy_model = str(config.get("numpy_model_file", YSA_NUMPY_MODEL_FILE)).strip()
+    candidates = [numpy_model]
+    if configured:
+        candidates.append(configured)
+    candidates.extend(YSA_MODEL_CANDIDATES)
+    return existing_file_name(candidates)
+
+
+def ysa_artifact_file(config: dict[str, Any], keys: list[str], default_file: str) -> str | None:
+    candidates = [str(config.get(key, "")).strip() for key in keys]
+    candidates.append(default_file)
+    return existing_file_name([item for item in candidates if item])
+
+
+def ysa_expected_features(config: dict[str, Any]) -> list[str]:
+    features = config_list(
+        config,
+        [
+            "input_features",
+            "processed_features",
+            "encoded_features",
+            "one_hot_columns",
+            "feature_names",
+            "feature_names_out",
+        ],
+    )
+    if features:
+        return features
+
+    feature_file = ysa_artifact_file(
+        config,
+        [
+            "feature_list_file",
+            "input_features_file",
+            "processed_features_file",
+            "one_hot_columns_file",
+        ],
+        YSA_FEATURE_LIST_FILE,
+    )
+    return load_ysa_feature_list_file(feature_file) if feature_file else []
+
+
+def load_ysa_reference_data(config: dict[str, Any], risk_config: dict[str, Any]) -> pd.DataFrame:
+    candidates = [
+        str(config.get("case_file", "")).strip(),
+        str(config.get("training_file", "")).strip(),
+        str(risk_config.get("case_file", "")).strip(),
+    ]
+    file_name = existing_file_name([item for item in candidates if item])
+    if not file_name:
+        return pd.DataFrame()
+    try:
+        return load_csv(file_name)
+    except Exception:
+        return pd.DataFrame()
+
+
+def unique_options(df: pd.DataFrame, column: str) -> list[Any]:
+    if column not in df.columns:
+        return []
+    values = df[column].dropna().unique().tolist()
+    return sorted(values, key=lambda value: str(value))
+
+
+def numeric_default(df: pd.DataFrame, column: str) -> float:
+    if column not in df.columns:
+        return 0.0
+    values = pd.to_numeric(df[column], errors="coerce").dropna()
+    if values.empty:
+        return 0.0
+    return float(values.median())
+
+
+def is_binary_feature(feature: str, df: pd.DataFrame) -> bool:
+    normalized = normalize_name(feature)
+    if normalized.startswith("is ") or normalized.startswith("has "):
+        return True
+    if feature in df.columns:
+        values = pd.to_numeric(df[feature], errors="coerce").dropna().unique().tolist()
+        return bool(values) and set(values).issubset({0, 1})
+    return False
+
+
+def manual_ysa_preprocess(
+    raw_input: pd.DataFrame,
+    config: dict[str, Any],
+    expected_features: list[str],
+) -> pd.DataFrame:
+    if not expected_features:
+        raise ValueError(YSA_PREPROCESSING_MISSING_MESSAGE)
+
+    training_file = str(config.get("training_file", "")).strip()
+    if not training_file:
+        raise ValueError(YSA_PREPROCESSING_MISSING_MESSAGE)
+
+    training_df = load_csv(training_file)
+    model_features = get_list(config, "model_features")
+    categorical_features = get_list(config, "categorical_features")
+    numeric_features = get_list(config, "numeric_features")
+    target = str(config.get("target", "")).strip()
+
+    train_features = training_df[model_features].copy()
+    if target and target in training_df.columns:
+        try:
+            from sklearn.model_selection import train_test_split
+
+            y = training_df[target].astype(int)
+            train_features, _test_features = train_test_split(
+                train_features,
+                test_size=0.2,
+                random_state=42,
+                stratify=y,
+            )
+        except Exception:
+            pass
+
+    prepared = pd.DataFrame(0.0, index=raw_input.index, columns=expected_features)
+
+    for feature in numeric_features:
+        if feature not in prepared.columns:
+            continue
+        train_values = pd.to_numeric(train_features[feature], errors="coerce").dropna()
+        mean = float(train_values.mean()) if not train_values.empty else 0.0
+        scale = float(train_values.std(ddof=0)) if len(train_values) > 1 else 1.0
+        if scale == 0:
+            scale = 1.0
+        if feature in raw_input.columns:
+            input_values = pd.to_numeric(raw_input[feature], errors="coerce").fillna(mean)
+        else:
+            input_values = pd.Series(mean, index=raw_input.index)
+        prepared[feature] = (input_values.astype(float) - mean) / scale
+
+    for feature in categorical_features:
+        if feature not in raw_input.columns:
+            continue
+        value = str(raw_input[feature].iloc[0])
+        encoded_column = f"{feature}_{value}"
+        if encoded_column in prepared.columns:
+            prepared.loc[raw_input.index[0], encoded_column] = 1.0
+
+    return prepared
+
+
+def unpack_ysa_bundle(artifact: Any) -> tuple[Any, Any | None, list[str]]:
+    if not isinstance(artifact, dict):
+        return artifact, None, []
+
+    model = artifact.get("model")
+    if model is None:
+        model = artifact.get("estimator")
+    if model is None:
+        model = artifact.get("classifier")
+
+    pipeline = artifact.get("pipeline")
+    preprocessor = artifact.get("preprocessor")
+    if preprocessor is None:
+        preprocessor = artifact.get("preprocessing")
+    if preprocessor is None:
+        preprocessor = artifact.get("transformer")
+    if model is None and pipeline is not None and hasattr(pipeline, "predict"):
+        model = pipeline
+    elif preprocessor is None:
+        preprocessor = pipeline
+    features: list[str] = []
+    for key in (
+        "input_features",
+        "processed_features",
+        "encoded_features",
+        "one_hot_columns",
+        "feature_names",
+        "feature_names_out",
+    ):
+        value = artifact.get(key)
+        if isinstance(value, list):
+            features = [str(item) for item in value]
+            break
+    return (model if model is not None else artifact), preprocessor, features
+
+
+def to_model_array(values: Any) -> np.ndarray:
+    if hasattr(values, "toarray"):
+        values = values.toarray()
+    if isinstance(values, pd.DataFrame):
+        values = values.to_numpy()
+    return np.asarray(values)
+
+
+def transformed_frame(values: Any, columns: list[str]) -> pd.DataFrame:
+    array = to_model_array(values)
+    if columns and array.ndim == 2 and array.shape[1] == len(columns):
+        return pd.DataFrame(array, columns=columns)
+    return pd.DataFrame(array)
+
+
+def transformer_feature_names(transformer: Any, input_features: list[str]) -> list[str]:
+    if hasattr(transformer, "get_feature_names_out"):
+        try:
+            return [str(item) for item in transformer.get_feature_names_out(input_features)]
+        except TypeError:
+            return [str(item) for item in transformer.get_feature_names_out()]
+    return []
+
+
+def align_expected_features(frame: pd.DataFrame, expected_features: list[str]) -> pd.DataFrame:
+    if not expected_features:
+        return frame
+    missing = [feature for feature in expected_features if feature not in frame.columns]
+    for feature in missing:
+        frame[feature] = 0
+    return frame[expected_features]
+
+
+def keras_expected_width(model: Any) -> int | None:
+    shape = getattr(model, "input_shape", None)
+    if isinstance(shape, list) and shape:
+        shape = shape[0]
+    if isinstance(shape, tuple) and len(shape) >= 2 and shape[-1] is not None:
+        return int(shape[-1])
+    return None
+
+
+def numpy_expected_width(model: Any) -> int | None:
+    if not isinstance(model, dict) or model.get("model_type") != "numpy_dense_sigmoid":
+        return None
+    layers = model.get("layers", [])
+    if not layers:
+        return None
+    first_weights, _first_bias = layers[0]
+    if hasattr(first_weights, "shape") and len(first_weights.shape) == 2:
+        return int(first_weights.shape[0])
+    return None
+
+
+def prepare_ysa_input(
+    raw_input: pd.DataFrame,
+    config: dict[str, Any],
+    model_file: str,
+    model: Any,
+    bundled_preprocessor: Any | None,
+    bundled_features: list[str],
+) -> Any:
+    suffix = Path(model_file).suffix.lower()
+    model_features = get_list(config, "model_features")
+    categorical_features = get_list(config, "categorical_features")
+    numeric_features = get_list(config, "numeric_features")
+
+    if suffix not in YSA_NEURAL_MODEL_SUFFIXES and bundled_preprocessor is None:
+        return raw_input[model_features]
+
+    expected_features = bundled_features or ysa_expected_features(config)
+
+    preprocessor = bundled_preprocessor
+    if preprocessor is None:
+        preprocessor_file = ysa_artifact_file(
+            config,
+            ["preprocessor_file", "preprocessing_file", "transformer_file", "pipeline_file"],
+            YSA_PREPROCESSOR_FILE,
+        )
+        if preprocessor_file:
+            try:
+                preprocessor = load_ysa_joblib(preprocessor_file)
+            except Exception:
+                preprocessor = None
+
+    if preprocessor is not None:
+        transformed = preprocessor.transform(raw_input[model_features])
+        columns = expected_features or transformer_feature_names(preprocessor, model_features)
+        prepared = transformed_frame(transformed, columns)
+        if expected_features:
+            prepared = align_expected_features(prepared, expected_features)
+        values = to_model_array(prepared)
+    else:
+        try:
+            prepared = manual_ysa_preprocess(raw_input, config, expected_features)
+            values = to_model_array(prepared)
+            expected_width = keras_expected_width(model) or numpy_expected_width(model)
+            if expected_width is not None and values.ndim == 2 and values.shape[1] == expected_width:
+                return values
+        except Exception:
+            pass
+
+        encoder_file = ysa_artifact_file(
+            config, ["encoder_file", "one_hot_encoder_file"], YSA_ENCODER_FILE
+        )
+        scaler_file = ysa_artifact_file(config, ["scaler_file", "standard_scaler_file"], YSA_SCALER_FILE)
+        if (categorical_features and not encoder_file) or (numeric_features and not scaler_file) or not expected_features:
+            raise ValueError(YSA_PREPROCESSING_MISSING_MESSAGE)
+
+        pieces: list[pd.DataFrame] = []
+        if numeric_features:
+            scaler = load_ysa_joblib(str(scaler_file))
+            numeric_values = raw_input[numeric_features].apply(pd.to_numeric, errors="coerce").fillna(0)
+            pieces.append(pd.DataFrame(scaler.transform(numeric_values), columns=numeric_features))
+        if categorical_features:
+            encoder = load_ysa_joblib(str(encoder_file))
+            encoded = encoder.transform(raw_input[categorical_features])
+            encoded_names = transformer_feature_names(encoder, categorical_features)
+            pieces.append(transformed_frame(encoded, encoded_names))
+
+        prepared = pd.concat(pieces, axis=1) if pieces else pd.DataFrame()
+        prepared = align_expected_features(prepared, expected_features)
+        values = to_model_array(prepared)
+
+    expected_width = keras_expected_width(model) or numpy_expected_width(model)
+    if expected_width is not None and values.ndim == 2 and values.shape[1] != expected_width:
+        raise ValueError(
+            f"YSA modeli {expected_width} giriş bekliyor, hazırlanan veri {values.shape[1]} kolon içeriyor."
+        )
+    return values
+
+
+def ysa_probability(model: Any, features: Any) -> float:
+    if isinstance(model, dict) and model.get("model_type") == "numpy_dense_sigmoid":
+        values = to_model_array(features).astype(np.float32)
+        layers = model.get("layers", [])
+        for layer_index, (weights, bias) in enumerate(layers):
+            values = values @ weights + bias
+            if layer_index < len(layers) - 1:
+                values = np.maximum(values, 0)
+            else:
+                values = 1 / (1 + np.exp(-values))
+        return float(np.ravel(values)[0])
+    if hasattr(model, "predict_proba"):
+        probabilities = model.predict_proba(features)
+        if probabilities.ndim == 2 and probabilities.shape[1] > 1:
+            classes = list(getattr(model, "classes_", []))
+            class_index = classes.index(1) if 1 in classes else probabilities.shape[1] - 1
+            return float(probabilities[0, class_index])
+        return float(np.ravel(probabilities)[0])
+    prediction = model.predict(features)
+    return float(np.ravel(prediction)[0])
+
+
+def ysa_result_level(score: float, thresholds: dict[str, float]) -> str:
+    if score >= thresholds["high"]:
+        return "Yüksek Risk"
+    if score >= thresholds["low"]:
+        return "Orta Risk"
+    return "Düşük Risk"
+
+
+def ysa_result_badge(level: str) -> str:
+    if level.startswith("Yüksek"):
+        return badge(level, "high")
+    if level.startswith("Orta"):
+        return badge(level, "medium")
+    return badge(level, "low")
+
+
+def ysa_comment(level: str, prediction_text: str) -> str:
+    if level.startswith("Yüksek"):
+        return "Bu dosya için SLA ihlal riski yüksek görünüyor; öncelikli takip önerilir."
+    if level.startswith("Orta"):
+        return "Bu dosya için risk orta seviyede; düzenli kontrol ve erken müdahale faydalı olur."
+    if prediction_text == "İhlal Bekleniyor":
+        return "Model ihlal bekliyor, ancak olasılık eşik altında; dosya yakın takipte tutulabilir."
+    return "Bu dosya için mevcut girdilere göre SLA ihlali beklenmiyor."
 
 
 def positive_probability(model: Any, features: pd.DataFrame) -> np.ndarray:
@@ -775,6 +1266,143 @@ def render_detail(selected_row: pd.Series) -> None:
                 st.markdown(f"- {str(reason)}")
 
 
+def render_ysa_manual_prediction(risk_config: dict[str, Any]) -> None:
+    ysa_config, config_source = load_ysa_config(risk_config)
+    model_features = get_list(ysa_config, "model_features")
+    categorical_features = get_list(ysa_config, "categorical_features")
+    numeric_features = get_list(ysa_config, "numeric_features")
+    thresholds = get_thresholds(risk_config)
+    reference_df = load_ysa_reference_data(ysa_config, risk_config)
+    model_file = ysa_model_file_name(ysa_config)
+
+    st.markdown("### YSA Manuel Tahmin")
+    st.caption(
+        "Dosya özelliklerini girerek eğitilmiş Yapay Sinir Ağı modeliyle yalnızca SLA ihlal riski tahmini alın."
+    )
+
+    if config_source == RISK_CONFIG_FILE:
+        st.info(
+            "YSA için ayrı config bulunamadı; manuel alanlar mevcut risk modeli feature listesine göre hazırlandı."
+        )
+
+    if not model_features:
+        st.warning("YSA tahmini için kullanılacak model_features bilgisi bulunamadı.")
+        return
+
+    if model_file is None:
+        st.warning(
+            f"YSA model dosyası bulunamadı. Varsayılan dosya adı: {YSA_MODEL_FILE}. "
+            "Dosyayı eklediğinizde bu bölümden manuel tahmin alınabilir."
+        )
+
+    with st.form("ysa_manual_prediction_form"):
+        st.markdown("#### Dosya Özellikleri")
+        input_values: dict[str, Any] = {}
+        columns = st.columns(2)
+        for index, feature in enumerate(model_features):
+            with columns[index % 2]:
+                key = f"ysa_input_{index}_{feature}"
+                if feature in categorical_features:
+                    options = unique_options(reference_df, feature)
+                    if options:
+                        input_values[feature] = st.selectbox(feature, options=options, key=key)
+                    else:
+                        input_values[feature] = st.text_input(feature, key=key)
+                elif is_binary_feature(feature, reference_df):
+                    default_value = bool(int(round(numeric_default(reference_df, feature))))
+                    input_values[feature] = int(st.checkbox(feature, value=default_value, key=key))
+                elif feature in numeric_features or feature in reference_df.columns:
+                    default_value = numeric_default(reference_df, feature)
+                    input_values[feature] = st.number_input(
+                        feature,
+                        value=float(default_value),
+                        step=1.0,
+                        key=key,
+                    )
+                else:
+                    input_values[feature] = st.text_input(feature, key=key)
+
+        submitted = st.form_submit_button("YSA SLA Riskini Tahmin Et")
+
+    if not submitted:
+        return
+
+    if model_file is None:
+        st.warning("YSA modeli yüklenemediği için tahmin üretilemedi.")
+        return
+
+    raw_input = pd.DataFrame([input_values], columns=model_features)
+    try:
+        artifact = load_ysa_model(model_file)
+        model, bundled_preprocessor, bundled_features = unpack_ysa_bundle(artifact)
+        prepared_input = prepare_ysa_input(
+            raw_input,
+            ysa_config,
+            model_file,
+            model,
+            bundled_preprocessor,
+            bundled_features,
+        )
+        score = float(np.clip(ysa_probability(model, prepared_input), 0, 1))
+    except ValueError as exc:
+        st.error(str(exc))
+        return
+    except FileNotFoundError as exc:
+        st.warning(f"YSA tahmini için gerekli dosya bulunamadı: {exc}")
+        return
+    except Exception as exc:
+        st.error(f"YSA tahmini üretilirken bir hata oluştu: {exc}")
+        return
+
+    percent = score * 100
+    level = ysa_result_level(score, thresholds)
+    prediction_text = "İhlal Bekleniyor" if score >= 0.5 else "İhlal Beklenmiyor"
+    comment = ysa_comment(level, prediction_text)
+
+    st.markdown("#### Tahmin Sonucu")
+    result_cols = st.columns(4)
+    with result_cols[0]:
+        st.markdown(
+            f"""
+            <div class="summary-card">
+                <div class="summary-label">YSA SLA İhlal Riski</div>
+                <div class="summary-value">%{percent:.1f}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with result_cols[1]:
+        st.markdown(
+            f"""
+            <div class="summary-card">
+                <div class="summary-label">YSA Risk Seviyesi</div>
+                <div>{ysa_result_badge(level)}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with result_cols[2]:
+        st.markdown(
+            f"""
+            <div class="summary-card">
+                <div class="summary-label">YSA Tahmini</div>
+                <div class="summary-value">{prediction_text}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with result_cols[3]:
+        st.markdown(
+            f"""
+            <div class="summary-card">
+                <div class="summary-label">Kısa Yorum</div>
+                <div class="summary-value" style="font-size: 0.92rem; line-height: 1.35;">{comment}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+
 def main() -> None:
     st.markdown('<div class="page-title">IT Servis Yönetimi SLA Risk Takip Paneli</div>', unsafe_allow_html=True)
     st.markdown(
@@ -793,6 +1421,8 @@ def main() -> None:
     except Exception as exc:
         st.error(f"Panel hazırlanırken bir hata oluştu: {exc}")
         st.stop()
+
+    risk_config, _duration_config = load_configs()
 
     st.sidebar.markdown("## SLA Risk Paneli")
     st.sidebar.caption("AI destekli operasyonel takip ekranı")
@@ -819,6 +1449,8 @@ def main() -> None:
     st.markdown("### Öncelikli Takip Listesi")
     if filtered.empty:
         st.info("Seçilen filtrelere uygun dosya bulunamadı.")
+        st.divider()
+        render_ysa_manual_prediction(risk_config)
         return
 
     max_display_rows = 1000
@@ -862,6 +1494,9 @@ def main() -> None:
 
     selected_row = sorted_table.loc[sorted_table[CASE_ID_COL] == selected_case].iloc[0]
     render_detail(selected_row)
+
+    st.divider()
+    render_ysa_manual_prediction(risk_config)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,37 @@
+{
+  "model_file": "ysa_sla_risk_model.keras",
+  "numpy_model_file": "ysa_sla_risk_weights.npz",
+  "case_file": "SLA_Arayuz_Dosyalari.csv",
+  "training_file": "SLA_Temiz_Veri.csv",
+  "preprocessor_file": "ysa_preprocessor.pkl",
+  "feature_list_file": "ysa_feature_list.json",
+  "categorical_features": [
+    "Variant",
+    "Priority",
+    "Issue Type",
+    "Report Channel"
+  ],
+  "numeric_features": [
+    "Step_count",
+    "Reassignment_count",
+    "Escalation_count",
+    "Has_Bounce",
+    "Workload_Index",
+    "Open_Hour",
+    "Is_Weekend"
+  ],
+  "model_features": [
+    "Variant",
+    "Priority",
+    "Issue Type",
+    "Report Channel",
+    "Step_count",
+    "Reassignment_count",
+    "Escalation_count",
+    "Has_Bounce",
+    "Workload_Index",
+    "Open_Hour",
+    "Is_Weekend"
+  ],
+  "target": "SLA_Violation"
+}
