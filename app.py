@@ -11,6 +11,11 @@ import streamlit as st
 
 
 BASE_DIR = Path(__file__).resolve().parent
+CONFIG_DIR = BASE_DIR / "config"
+DATA_DIR = BASE_DIR / "data"
+MODELS_DIR = BASE_DIR / "models"
+NOTEBOOKS_DIR = BASE_DIR / "notebooks"
+OUTPUTS_DIR = BASE_DIR / "outputs"
 
 RISK_CONFIG_FILE = "sla_risk_model_config.json"
 DURATION_CONFIG_FILE = "duration_model_config.json"
@@ -284,6 +289,66 @@ st.markdown(
 )
 
 
+def path_candidates(file_name: str | Path, primary_dir: Path) -> list[Path]:
+    value = str(file_name).strip()
+    if not value:
+        return []
+
+    raw_path = Path(value).expanduser()
+    if raw_path.is_absolute():
+        candidates = [
+            raw_path,
+            primary_dir / raw_path.name,
+            BASE_DIR / raw_path.name,
+        ]
+    elif raw_path.parent == Path("."):
+        candidates = [
+            primary_dir / raw_path.name,
+            BASE_DIR / raw_path.name,
+        ]
+    else:
+        candidates = [
+            BASE_DIR / raw_path,
+            primary_dir / raw_path.name,
+            primary_dir / raw_path,
+            BASE_DIR / raw_path.name,
+        ]
+
+    resolved_base = BASE_DIR.resolve()
+    safe_candidates: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        resolved = candidate.resolve()
+        if not raw_path.is_absolute():
+            try:
+                resolved.relative_to(resolved_base)
+            except ValueError:
+                continue
+        key = str(resolved).casefold()
+        if key not in seen:
+            safe_candidates.append(resolved)
+            seen.add(key)
+    return safe_candidates
+
+
+def resolve_file_path(
+    file_name: str | Path,
+    primary_dir: Path,
+    required: bool = True,
+) -> Path | None:
+    candidates = path_candidates(file_name, primary_dir)
+    for path in candidates:
+        if path.exists():
+            return path
+
+    if required:
+        name = Path(str(file_name).strip()).name or str(file_name)
+        searched = ", ".join(str(path) for path in candidates)
+        detail = f" Aranan konumlar: {searched}" if searched else ""
+        raise FileNotFoundError(f"{name} bulunamadı.{detail}")
+    return None
+
+
 def read_json(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"{path.name} bulunamadı.")
@@ -293,40 +358,39 @@ def read_json(path: Path) -> dict[str, Any]:
 
 @st.cache_data(show_spinner=False)
 def load_configs() -> tuple[dict[str, Any], dict[str, Any]]:
+    risk_config_path = resolve_file_path(RISK_CONFIG_FILE, CONFIG_DIR)
+    duration_config_path = resolve_file_path(DURATION_CONFIG_FILE, CONFIG_DIR)
     return (
-        read_json(BASE_DIR / RISK_CONFIG_FILE),
-        read_json(BASE_DIR / DURATION_CONFIG_FILE),
+        read_json(risk_config_path),
+        read_json(duration_config_path),
     )
 
 
 @st.cache_data(show_spinner=False)
-def load_csv(file_name: str) -> pd.DataFrame:
-    path = BASE_DIR / file_name
-    if not path.exists():
-        raise FileNotFoundError(f"{file_name} bulunamadı.")
+def load_csv(file_name: str | Path) -> pd.DataFrame:
+    path = resolve_file_path(file_name, DATA_DIR)
     return pd.read_csv(path)
 
 
 @st.cache_resource(show_spinner=False)
-def load_model(file_name: str) -> Any:
-    path = BASE_DIR / file_name
-    if not path.exists():
-        raise FileNotFoundError(f"{file_name} bulunamadı.")
+def load_model(file_name: str | Path) -> Any:
+    path = resolve_file_path(file_name, MODELS_DIR)
     return joblib.load(path)
 
 
-def existing_file_name(file_names: list[str]) -> str | None:
+def existing_file_name(file_names: list[str], primary_dir: Path) -> str | None:
     for file_name in file_names:
-        if file_name and (BASE_DIR / file_name).exists():
-            return file_name
+        if not file_name:
+            continue
+        path = resolve_file_path(file_name, primary_dir, required=False)
+        if path is not None:
+            return str(path)
     return None
 
 
 @st.cache_resource(show_spinner=False)
-def load_ysa_model(file_name: str) -> Any:
-    path = BASE_DIR / file_name
-    if not path.exists():
-        raise FileNotFoundError(f"{file_name} bulunamadı.")
+def load_ysa_model(file_name: str | Path) -> Any:
+    path = resolve_file_path(file_name, MODELS_DIR)
     suffix = path.suffix.lower()
     if suffix == ".npz":
         layers = []
@@ -353,17 +417,15 @@ def load_ysa_model(file_name: str) -> Any:
 
 
 @st.cache_resource(show_spinner=False)
-def load_ysa_joblib(file_name: str) -> Any:
-    path = BASE_DIR / file_name
-    if not path.exists():
-        raise FileNotFoundError(f"{file_name} bulunamadı.")
+def load_ysa_joblib(file_name: str | Path) -> Any:
+    path = resolve_file_path(file_name, MODELS_DIR)
     return joblib.load(path)
 
 
 @st.cache_data(show_spinner=False)
-def load_ysa_feature_list_file(file_name: str) -> list[str]:
-    path = BASE_DIR / file_name
-    if not path.exists():
+def load_ysa_feature_list_file(file_name: str | Path) -> list[str]:
+    path = resolve_file_path(file_name, CONFIG_DIR, required=False)
+    if path is None:
         return []
     suffix = path.suffix.lower()
     if suffix == ".json":
@@ -485,8 +547,8 @@ def config_list(config: dict[str, Any], keys: list[str]) -> list[str]:
 
 
 def load_ysa_config(risk_config: dict[str, Any]) -> tuple[dict[str, Any], str]:
-    config_path = BASE_DIR / YSA_CONFIG_FILE
-    if config_path.exists():
+    config_path = resolve_file_path(YSA_CONFIG_FILE, CONFIG_DIR, required=False)
+    if config_path is not None:
         config = read_json(config_path)
         source = YSA_CONFIG_FILE
     else:
@@ -514,13 +576,18 @@ def ysa_model_file_name(config: dict[str, Any]) -> str | None:
     if configured:
         candidates.append(configured)
     candidates.extend(YSA_MODEL_CANDIDATES)
-    return existing_file_name(candidates)
+    return existing_file_name(candidates, MODELS_DIR)
 
 
-def ysa_artifact_file(config: dict[str, Any], keys: list[str], default_file: str) -> str | None:
+def ysa_artifact_file(
+    config: dict[str, Any],
+    keys: list[str],
+    default_file: str,
+    primary_dir: Path = MODELS_DIR,
+) -> str | None:
     candidates = [str(config.get(key, "")).strip() for key in keys]
     candidates.append(default_file)
-    return existing_file_name([item for item in candidates if item])
+    return existing_file_name([item for item in candidates if item], primary_dir)
 
 
 def ysa_expected_features(config: dict[str, Any]) -> list[str]:
@@ -547,6 +614,7 @@ def ysa_expected_features(config: dict[str, Any]) -> list[str]:
             "one_hot_columns_file",
         ],
         YSA_FEATURE_LIST_FILE,
+        CONFIG_DIR,
     )
     return load_ysa_feature_list_file(feature_file) if feature_file else []
 
@@ -557,7 +625,7 @@ def load_ysa_reference_data(config: dict[str, Any], risk_config: dict[str, Any])
         str(config.get("training_file", "")).strip(),
         str(risk_config.get("case_file", "")).strip(),
     ]
-    file_name = existing_file_name([item for item in candidates if item])
+    file_name = existing_file_name([item for item in candidates if item], DATA_DIR)
     if not file_name:
         return pd.DataFrame()
     try:
